@@ -1,0 +1,78 @@
+sequenceDiagram
+    autonumber
+    actor Browser as Browser UI
+    participant App as app.js
+    participant API as InvoiceApp API
+    participant MW as SessionAuthMiddleware
+    participant Attr as RequireRoleAttribute
+    participant Ctrl as ApprovalsController
+    participant Base as ApiControllerBase
+    participant Service as ApprovalService
+    participant Repo as NEW SqlInvoiceRepository
+    participant SQL as NEW Azure SQL Database
+    participant Audit as NEW ApprovalAudit table
+    participant Outbox as NEW Outbox table
+    participant Worker as NEW Background worker
+    participant Topic as NEW Service Bus topic
+    participant PayExClient as NEW PayExClient
+    participant PayEx as NEW PayEx
+    participant Recon as NEW Nightly reconciliation
+
+    Browser->>App: click Approve on pending invoice<br/>backend/src/InvoiceApp.Api/wwwroot/app.js:72
+    App->>API: POST /api/approvals/{invoiceId}/approve
+    API->>MW: request enters middleware
+    Note right of MW: backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:14-35
+
+    alt No bearer token or invalid session
+        MW-->>App: 401 Unauthorized
+        App-->>Browser: show session error
+    else Valid session
+        MW->>Attr: pass request
+        alt User not Approver/Admin
+            Attr-->>App: 403 Forbidden
+            App-->>Browser: show role error
+        else Authorized
+            Attr->>Ctrl: Approve(invoiceId)
+            Ctrl->>Base: Handle(() => _approvals.Approve(...))
+            Base->>Service: _approvals.Approve(invoiceId, HttpContext.GetSession().Username)
+            Note right of Service: ApprovalService talks to IInvoiceRepository; the target repo is SqlInvoiceRepository not SQL directly.
+
+            Service->>Repo: IInvoiceRepository.Update(invoice)
+            Repo->>SQL: UPDATE invoices SET Status='Approved' WHERE Id=? AND Status='PendingApproval'
+            alt 0 rows affected
+                SQL-->>Repo: 0 rows
+                Repo-->>Service: throw InvalidOperationException
+                Service-->>Base: throw InvalidOperationException
+                Base-->>Ctrl: 409 Conflict
+                Ctrl-->>App: 409 Conflict
+                App-->>Browser: show conflict
+            else 1 row affected
+                SQL->>Audit: INSERT approval audit row
+                SQL->>Outbox: INSERT outbox row
+                SQL-->>Service: COMMIT
+                Service-->>Base: Invoice
+                Base-->>Ctrl: 200 OK
+                Ctrl-->>App: 200 OK
+                App-->>Browser: approval succeeds immediately after COMMIT
+
+                SQL-->>Worker: outbox item available
+                Worker->>Topic: publish { invoice_id, idempotency_key: invoice_id }
+                Topic->>PayExClient: delivery
+                PayExClient->>PayEx: HTTPS payment request
+                Note over Worker,PayEx: The worker is asynchronous and never responds to the browser
+
+                alt Payment timeout or retry window
+                    PayEx-->>PayExClient: timeout
+                    PayExClient->>SQL: lookup invoice_id and current state
+                    alt lookup succeeds
+                        PayExClient->>PayEx: retry only if safe
+                    else lookup fails
+                        PayExClient->>SQL: mark state as Unknown
+                    end
+                end
+            end
+        end
+    end
+
+    Recon->>SQL: nightly reconciliation of outstanding invoice_id records
+    Note over SQL,Recon: NEW components are planned in ops/README.md:15-23 and ops/incidents/INC-2047/README.md:10-14.

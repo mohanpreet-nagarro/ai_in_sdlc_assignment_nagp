@@ -1,0 +1,54 @@
+flowchart LR
+    browser["Browser client\nbackend/src/InvoiceApp.Api/wwwroot/index.html:1-76\nbackend/src/InvoiceApp.Api/wwwroot/app.js:1-143"]
+
+    subgraph api["ASP.NET Core API + NEW target add-ons\nbackend/src/InvoiceApp.Api/Program.cs:5-23\nbackend/src/InvoiceApp.Api/Controllers/ApprovalsController.cs:7-28"]
+        apiApp["InvoiceApp API\nbackend/src/InvoiceApp.Api/Program.cs:5-23"]
+        auth["SessionAuthMiddleware\nbackend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:4-46"]
+        role["RequireRoleAttribute\nbackend/src/InvoiceApp.Api/Auth/RequireRoleAttribute.cs:7-25"]
+        approvals["ApprovalsController\nbackend/src/InvoiceApp.Api/Controllers/ApprovalsController.cs:7-28"]
+        apiBase["ApiControllerBase.Handle\nbackend/src/InvoiceApp.Api/Controllers/ApiControllerBase.cs:6-23"]
+        service["ApprovalService\nbackend/src/InvoiceApp.Domain/ApprovalService.cs:7-73"]
+        repoIface["IInvoiceRepository\nbackend/src/InvoiceApp.Domain/IInvoiceRepository.cs:3-10"]
+        repoNew["NEW SqlInvoiceRepository\nimplements IInvoiceRepository"]
+        payexClient["NEW PayExClient\nin InvoiceApp.Api"]
+    end
+
+    sql["NEW Azure SQL Database\nplanned in ops/README.md:15-23"]
+    audit["NEW ApprovalAudit table\nplanned in ops/README.md:15-23"]
+    outbox["NEW Outbox table\nplanned in ops/README.md:15-23"]
+    worker["NEW Background worker\nplanned in ops/incidents/INC-2047/README.md:10-14"]
+    topic["NEW Service Bus topic\nplanned in ops/README.md:15-23\nops/incidents/INC-2047/README.md:10-14"]
+    payex["NEW PayEx\nplanned in ops/README.md:15-23\nops/incidents/INC-2041/README.md:30-32"]
+    recon["NEW Nightly reconciliation\nplanned target design"]
+
+    style sql fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style audit fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style outbox fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style worker fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style topic fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style payex fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style repoNew fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style payexClient fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+    style recon fill:#fff2cc,stroke:#d6b656,stroke-width:2px,stroke-dasharray: 7 4
+
+    browser -->|"POST /api/approvals/{invoiceId}/approve\nbackend/src/InvoiceApp.Api/Controllers/ApprovalsController.cs:21-27\nbackend/src/InvoiceApp.Api/wwwroot/app.js:72-90"| apiApp
+    apiApp --> auth
+    auth -->|"/api/auth/login bypasses session check\nbackend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:13-14"| auth
+    auth --> role
+    role --> approvals
+    approvals --> apiBase
+    apiBase --> service
+    service -->|"depends on IInvoiceRepository\nbackend/src/InvoiceApp.Domain/ApprovalService.cs:8-17"| repoIface
+    repoIface -->|"implemented by NEW SqlInvoiceRepository"| repoNew
+    repoNew -->|"conditional UPDATE ... WHERE Status='PendingApproval'\n409 if 0 rows"| sql
+    sql --> audit
+    sql --> outbox
+
+    outbox -->|"async drain of outbox\nNEW"| worker
+    worker -->|"publish event with invoice_id as idempotency key\nNEW"| topic
+    topic -->|"delivery to PayExClient\nNEW"| payexClient
+    payexClient -->|"HTTPS payment request\nNEW"| payex
+    worker -.->|"on timeout: lookup invoice_id, never blind resend; if lookup fails mark Unknown\nNEW"| sql
+    recon -->|"nightly reconciliation of outstanding rows\nNEW"| sql
+
+    service -.->|"200 is returned immediately after COMMIT; worker responds asynchronously and never to browser\nNEW"| browser

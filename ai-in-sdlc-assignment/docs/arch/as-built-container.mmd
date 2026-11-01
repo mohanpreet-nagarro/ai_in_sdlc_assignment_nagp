@@ -1,0 +1,49 @@
+flowchart LR
+    browser["Browser client<br/>backend/src/InvoiceApp.Api/wwwroot/index.html:1-76<br/>backend/src/InvoiceApp.Api/wwwroot/app.js:1-143"]
+
+    subgraph api["ASP.NET Core API<br/>backend/src/InvoiceApp.Api/Program.cs:5-23"]
+        program["Program startup<br/>backend/src/InvoiceApp.Api/Program.cs:5-23"]
+        authCtrl["AuthController<br/>backend/src/InvoiceApp.Api/Controllers/AuthController.cs:7-49"]
+        invoicesCtrl["InvoicesController<br/>backend/src/InvoiceApp.Api/Controllers/InvoicesController.cs:7-76"]
+        approvalsCtrl["ApprovalsController<br/>backend/src/InvoiceApp.Api/Controllers/ApprovalsController.cs:7-28"]
+        apiBase["ApiControllerBase.Handle<br/>backend/src/InvoiceApp.Api/Controllers/ApiControllerBase.cs:6-23"]
+        mw["SessionAuthMiddleware<br/>backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:4-46"]
+        role["RequireRoleAttribute<br/>backend/src/InvoiceApp.Api/Auth/RequireRoleAttribute.cs:7-25"]
+        sessionStore["SessionStore<br/>backend/src/InvoiceApp.Api/Auth/SessionStore.cs:7-22"]
+        repoImpl["InMemoryInvoiceRepository<br/>backend/src/InvoiceApp.Api/InMemoryInvoiceRepository.cs:6-63"]
+        demoOptions["DemoUsersOptions<br/>backend/src/InvoiceApp.Api/Auth/UserSession.cs:12-20<br/>backend/src/InvoiceApp.Api/appsettings.json:1-10"]
+    end
+
+    subgraph domain["Domain<br/>backend/src/InvoiceApp.Domain/IInvoiceRepository.cs:3-10<br/>backend/src/InvoiceApp.Domain/ApprovalService.cs:7-73<br/>backend/src/InvoiceApp.Domain/Invoice.cs:3-10<br/>backend/src/InvoiceApp.Domain/InvoiceStatus.cs:3-8"]
+        repoIface["IInvoiceRepository<br/>backend/src/InvoiceApp.Domain/IInvoiceRepository.cs:3-10"]
+        service["ApprovalService<br/>backend/src/InvoiceApp.Domain/ApprovalService.cs:7-73"]
+        model["Invoice + InvoiceStatus<br/>backend/src/InvoiceApp.Domain/Invoice.cs:3-10<br/>backend/src/InvoiceApp.Domain/InvoiceStatus.cs:3-8"]
+        discount["DiscountCalculator (unused)<br/>backend/src/InvoiceApp.Domain/DiscountCalculator.cs:3-31"]
+    end
+
+    browser -->|"api('/...') with bearer token<br/>backend/src/InvoiceApp.Api/wwwroot/app.js:16-24<br/>backend/src/InvoiceApp.Api/wwwroot/app.js:72-90"| mw
+    mw -->|"validates Authorization header and session lookup<br/>backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:18-35"| sessionStore
+    mw -->|"401 for missing/invalid session<br/>backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:19-28"| browser
+    mw -->|"/api/* except /api/auth/login bypasses session check<br/>backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:13-14"| authCtrl
+    mw -->|"/api/* except /api/auth/login bypasses session check<br/>backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:13-14"| invoicesCtrl
+    mw -->|"/api/* except /api/auth/login bypasses session check<br/>backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:13-14"| approvalsCtrl
+
+    authCtrl -->|"POST /api/auth/login and /api/auth/logout<br/>backend/src/InvoiceApp.Api/Controllers/AuthController.cs:23-48"| sessionStore
+    invoicesCtrl -->|"GET/POST/DELETE invoice endpoints<br/>backend/src/InvoiceApp.Api/Controllers/InvoicesController.cs:22-75"| repoImpl
+    approvalsCtrl -->|"POST /api/approvals/{invoiceId}/approve | reject<br/>backend/src/InvoiceApp.Api/Controllers/ApprovalsController.cs:8-28"| service
+    approvalsCtrl --> apiBase
+    apiBase -->|"Handle(...) maps 404/409/400<br/>backend/src/InvoiceApp.Api/Controllers/ApiControllerBase.cs:6-23"| approvalsCtrl
+
+    role -->|"403 when session role is not allowed<br/>backend/src/InvoiceApp.Api/Auth/RequireRoleAttribute.cs:16-25"| invoicesCtrl
+    role -->|"403 when session role is not allowed<br/>backend/src/InvoiceApp.Api/Auth/RequireRoleAttribute.cs:16-25"| approvalsCtrl
+    invoicesCtrl -->|"Only Delete requires Admin<br/>backend/src/InvoiceApp.Api/Controllers/InvoicesController.cs:55-75"| role
+    approvalsCtrl -->|"Approver/Admin required at controller level<br/>backend/src/InvoiceApp.Api/Controllers/ApprovalsController.cs:7-10"| role
+
+    service -->|"depends on IInvoiceRepository<br/>backend/src/InvoiceApp.Domain/ApprovalService.cs:8-17"| repoIface
+    repoIface -->|"implemented by<br/>backend/src/InvoiceApp.Api/InMemoryInvoiceRepository.cs:6-63"| repoImpl
+    repoImpl -->|"GetById and Update<br/>backend/src/InvoiceApp.Api/InMemoryInvoiceRepository.cs:25-28<br/>backend/src/InvoiceApp.Api/InMemoryInvoiceRepository.cs:50-57"| service
+    service -->|"updates status, DecidedBy, DecidedAt, DecisionNote<br/>backend/src/InvoiceApp.Domain/ApprovalService.cs:31-41<br/>backend/src/InvoiceApp.Domain/Invoice.cs:3-10"| model
+
+    program -->|"AddControllers, UseStaticFiles, UseMiddleware, MapControllers<br/>backend/src/InvoiceApp.Api/Program.cs:7-23"| api
+    demoOptions -->|"configured from appsettings.json<br/>backend/src/InvoiceApp.Api/Program.cs:12<br/>backend/src/InvoiceApp.Api/appsettings.json:1-10"| authCtrl
+    discount -.->|"unused helper<br/>backend/src/InvoiceApp.Domain/DiscountCalculator.cs:3-31"| model

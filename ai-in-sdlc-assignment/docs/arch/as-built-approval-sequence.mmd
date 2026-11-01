@@ -1,0 +1,79 @@
+sequenceDiagram
+    autonumber
+    actor Browser as Browser UI
+    participant AppJS as app.js
+    participant MW as SessionAuthMiddleware
+    participant Attr as RequireRoleAttribute
+    participant Ctrl as ApprovalsController
+    participant Base as ApiControllerBase
+    participant Service as ApprovalService
+    participant Repo as InMemoryInvoiceRepository
+
+    Note over Browser,AppJS: Click Approve on pending invoice<br/>backend/src/InvoiceApp.Api/wwwroot/app.js:72
+    Browser->>AppJS: click approve button
+    AppJS->>AppJS: decide('/approvals/{id}/approve', {})<br/>backend/src/InvoiceApp.Api/wwwroot/app.js:82-90
+    AppJS->>AppJS: api('/approvals/{id}/approve', { method: 'POST' })<br/>backend/src/InvoiceApp.Api/wwwroot/app.js:16-24
+    AppJS->>MW: HTTP POST /api/approvals/{id}/approve
+    Note right of MW: Authorization check in SessionAuthMiddleware.cs:14-35
+
+    alt Missing/invalid bearer token or no session
+        MW-->>AppJS: 401 Unauthorized
+        Note right of MW: SessionAuthMiddleware.cs:18-28
+        AppJS-->>Browser: show error
+    else Valid session present
+        MW->>MW: context.Items["session"] = session
+        MW->>Attr: continue action pipeline
+        Note right of Attr: RequireRoleAttribute.cs:9-25
+
+        alt User has no Approver/Admin role
+            Attr-->>AppJS: 403 Forbidden
+            Note right of Attr: RequireRoleAttribute.cs:15-23
+            AppJS-->>Browser: show error
+        else Authorized role
+            Attr->>Ctrl: Approve(invoiceId)
+            Note right of Ctrl: ApprovalsController.cs:8-28
+            Ctrl->>Base: Handle(() => _approvals.Approve(invoiceId, HttpContext.GetSession().Username))
+            Note right of Base: ApiControllerBase.cs:6-23
+
+            Base->>Service: _approvals.Approve(invoiceId, approver)
+            Note right of Service: ApprovalService.Approve is backend/src/InvoiceApp.Domain/ApprovalService.cs:31-41, and Submit is 21-29
+
+            Service->>Repo: GetById(invoiceId)<br/>backend/src/InvoiceApp.Api/InMemoryInvoiceRepository.cs:25-28
+            Repo-->>Service: invoice or null
+            Note over Service,Repo: GetById returns the live shared object in the in-memory list, and the status check in EnsurePending plus the later Update() are not atomic
+
+            alt Invoice not found
+                Service-->>Base: throw KeyNotFoundException
+                Base-->>Ctrl: NotFound(new { error = ex.Message })
+                Ctrl-->>AppJS: 404 Not Found
+                AppJS-->>Browser: show error
+            else Invoice exists but not PendingApproval
+                Service->>Service: EnsurePending(invoice)
+                Service-->>Base: throw InvalidOperationException
+                Base-->>Ctrl: Conflict(new { error = ex.Message })
+                Ctrl-->>AppJS: 409 Conflict
+                AppJS-->>Browser: show error
+            else Invoice can be approved
+                Service->>Service: invoice.Status = Approved
+                Service->>Service: invoice.DecidedBy = approver
+                Service->>Service: invoice.DecidedAt = DateTime.UtcNow
+                Service->>Repo: Update(invoice)<br/>backend/src/InvoiceApp.Api/InMemoryInvoiceRepository.cs:50-57
+                Note right of Repo: Update returns void and replaces the matching invoice instance in the shared in-memory list
+                Repo-->>Service: void
+                Service-->>Base: Invoice
+                Base-->>Ctrl: Ok(invoice)
+                Ctrl-->>AppJS: 200 OK with updated invoice
+                AppJS->>AppJS: refresh()
+                AppJS-->>Browser: UI refreshes pending list
+            end
+        end
+    end
+
+    Note over Browser,AppJS: Sources
+    Note over Browser,AppJS: Browser UI click: backend/src/InvoiceApp.Api/wwwroot/app.js:60-68, 76-82, 83-103
+    Note over Browser,AppJS: Middleware auth: backend/src/InvoiceApp.Api/Auth/SessionAuthMiddleware.cs:14-35
+    Note over Browser,AppJS: Role gate: backend/src/InvoiceApp.Api/Auth/RequireRoleAttribute.cs:9-25
+    Note over Browser,AppJS: Controller: backend/src/InvoiceApp.Api/Controllers/ApprovalsController.cs:8-27
+    Note over Browser,AppJS: Handle mapping: backend/src/InvoiceApp.Api/Controllers/ApiControllerBase.cs:6-23
+    Note over Browser,AppJS: Domain logic: backend/src/InvoiceApp.Domain/ApprovalService.cs:21-34, 47-55
+    Note over Browser,AppJS: Repository: backend/src/InvoiceApp.Api/InMemoryInvoiceRepository.cs:20-25, 41-48
